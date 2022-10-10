@@ -1,0 +1,504 @@
+---
+title: 'DATA622: Homework 1'
+author: "Eric Lehmphul"
+date: "10/9/2022"
+output:
+  html_document:
+    code_folding: show
+    toc: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, warning=F, message=F}
+library(tidyverse)
+library(ggpubr)
+library(caret)
+library(class)
+library(lubridate)
+library(MASS)
+library(BBmisc)
+library(rpart)
+library(fastDummies)
+library(rpart.plot)
+```
+
+# Data Exploration
+
+
+## Read in Data
+
+I elected to use the 100 record and 50,000 record datasets from https://excelbianalytics.com/wp/downloads-18-sample-csv-files-data-sets-for-testing-sales/.
+
+```{r}
+# read in data
+data.small <- read.csv("https://raw.githubusercontent.com/SaneSky109/DATA622/main/HW1/Data/100%20Sales%20Records.csv")
+
+data.large <- read.csv("https://raw.githubusercontent.com/SaneSky109/DATA622/main/HW1/Data/50000%20Sales%20Records.csv")
+```
+
+
+## Explore Data Structure
+
+At a quick glance, the small dataset contains 100 records and 14 variables and the large dataset contains 50,000 records and the same 14 variables. The datasets also contain a variety of data types for variables (categorical and numeric, and time). The data types for some variables need to be adjusted before continuing any further analysis.
+
+```{r}
+glimpse(data.small)
+```
+
+```{r}
+glimpse(data.large)
+```
+
+### Adjusting the Variable Data Types and Removing Irrelevant Variables
+
+The categorical variables were stored as character data types. These variables need to be changed to factor variables before proceeding with the analysis. The numeric variables were also adjusted to a uniform type of numeric, instead of being int and double data types. The variable, `Order.ID` was removed as the variable does not aid in the analysis.
+
+```{r}
+data.small$Region <- as.factor(data.small$Region)
+data.small$Country <- as.factor(data.small$Country)
+data.small$Item.Type <- as.factor(data.small$Item.Type)
+data.small$Sales.Channel <- as.factor(data.small$Sales.Channel)
+data.small$Order.Priority <- as.factor(data.small$Order.Priority)
+data.small$Order.Date <- as.Date(data.small$Order.Date, "%m/%d/%Y")
+data.small$Order.ID <- as.character(data.small$Order.ID)
+data.small$Ship.Date <- as.Date(data.small$Ship.Date, "%m/%d/%Y")
+data.small$Units.Sold <- as.numeric(data.small$Units.Sold)
+data.small$Unit.Price <- as.numeric(data.small$Unit.Price)
+data.small$Unit.Cost <- as.numeric(data.small$Unit.Cost)
+data.small$Total.Revenue <- as.numeric(data.small$Total.Revenue)
+data.small$Total.Cost <- as.numeric(data.small$Total.Cost)
+data.small$Total.Profit <- as.numeric(data.small$Total.Profit)
+```
+
+```{r}
+data.large$Region <- as.factor(data.large$Region)
+data.large$Country <- as.factor(data.large$Country)
+data.large$Item.Type <- as.factor(data.large$Item.Type)
+data.large$Sales.Channel <- as.factor(data.large$Sales.Channel)
+data.large$Order.Priority <- as.factor(data.large$Order.Priority)
+data.large$Order.Date <- as.Date(data.large$Order.Date, "%m/%d/%Y")
+data.large$Order.ID <- as.character(data.large$Order.ID)
+data.large$Ship.Date <- as.Date(data.large$Ship.Date, "%m/%d/%Y")
+data.large$Units.Sold <- as.numeric(data.large$Units.Sold)
+data.large$Unit.Price <- as.numeric(data.large$Unit.Price)
+data.large$Unit.Cost <- as.numeric(data.large$Unit.Cost)
+data.large$Total.Revenue <- as.numeric(data.large$Total.Revenue)
+data.large$Total.Cost <- as.numeric(data.large$Total.Cost)
+data.large$Total.Profit <- as.numeric(data.large$Total.Profit)
+```
+
+```{r}
+data.small <- data.small[,-7]
+data.large <- data.large[,-7]
+```
+
+
+### Adding Variables Derived from Data
+
+I elected to create three new variables for this analysis: `year`, `month`, and `Order.Size`. The `year` and `month` variables were derived from the `Order.Date` variable and could provide insight to whether there are set times where the Sales are more prevalent. The variable, `Order.Size`, bins the variable, `Units.Sold` into 5 separate bins. The `Order.Size` variable will be the target variable in my machine learning classification analysis in the later sections of this analysis. Analyzing `Order.Size` can aid Sales management by predicting the general order size a business should undertake given location, item being sold, price, cost, etc.
+
+```{r}
+data.small <-  data.small %>%
+  mutate(year = as.factor(year(Order.Date))) %>% 
+  mutate(month = as.factor(month(Order.Date))) %>%
+  mutate(Order.Size = cut(Units.Sold, breaks = c(0, 1999, 3999, 5999, 7999, 10000)))
+
+data.large <-  data.large %>%
+  mutate(year = as.factor(year(Order.Date))) %>% 
+  mutate(month = as.factor(month(Order.Date))) %>%
+  mutate(Order.Size = cut(Units.Sold, breaks = c(0, 1999, 3999, 5999, 7999, 10000)))
+```
+
+```{r}
+levels(data.small$Order.Size) <- c("0-1999", "2000-3999", "4000-5999", "6000-7999","8000+")
+
+levels(data.large$Order.Size) <- c("0-1999", "2000-3999", "4000-5999", "6000-7999","8000+")
+
+data.small$Order.Size <- factor(data.small$Order.Size, ordered = T)
+data.large$Order.Size <- factor(data.large$Order.Size, ordered = T)
+```
+
+## Summary Table of Data
+
+### Small Dataset
+
+Some notable descriptive statistics:
+
+* There are many Countries (76) and Item Types (12) present in the small dataset of only 100 rows. This could create problems for machine learning models if not all factor levels are represented in the training of the model.
+
+* There is a large disparity of unit / total price, cost, revenue, and profit across the data
+
+```{r}
+summary(data.small)
+
+paste0("Number of Unique Countries: ", length(unique(data.small$Country)))
+paste0("Number of Unique Item.Types: ", length(unique(data.small$Item.Type)))
+```
+
+### Large Dataset
+
+Notable summary statistics are:
+
+* Similar to the small dataset, the large dataset contains a large number of Countries (185). There is a large number of rows (50,000) making this dataset more resilient to a large number of dimensions.
+
+* The number of Item Types is the same as the small dataset
+
+* The cost and price of products are vastly different from one another
+
+```{r}
+summary(data.large)
+
+paste0("Number of Unique Countries: ", length(unique(data.large$Country)))
+paste0("Number of Unique Item.Types: ", length(unique(data.large$Item.Type)))
+```
+
+## Visualizations
+
+The visualizations below explore the data distributions of many of the variables in the dataset and compare the small dataset to the large dataset. 
+
+* The numeric data distributions for all variables in the small dataset appear to mainly follow a right skewed distribution apart from `Unit.Price` and `Unit.Cost` which appears to be bimodal.
+
+* The numeric data distributions for the large dataset are:
+  - `Unit.Price` and `Unit.Cost` - Multimodal
+  - `Total.Revenue`, `Total.Cost`, and `Total.Profit` - Right Skewed
+  
+* The categorical data distributions are much more balanced for the large dataset compared to the small dataset. For example, both `Country` and `Item.Type` are sparsely populated for the small dataset with only 2 to 5 records populating them in some instances where the large dataset contains a more balanced class distribution of having 4000 records for each category for `Item.Type`.
+
+```{r}
+plot2 <- ggplot() +
+  geom_density(aes(Unit.Price, fill = "Small"), alpha = .2, data = data.small) +
+  geom_density(aes(Unit.Price, fill = "Large"), alpha = .2, data = data.large) +
+  scale_fill_manual(name = "Dataset", values = c(Small = "blue", Large = "orange")) +
+  ggtitle("Density Plot: Unit.Price")
+
+
+plot3 <- ggplot() +
+  geom_density(aes(Unit.Cost, fill = "Small"), alpha = .2, data = data.small) +
+  geom_density(aes(Unit.Cost, fill = "Large"), alpha = .2, data = data.large) +
+  scale_fill_manual(name = "Dataset", values = c(Small = "blue", Large = "orange")) +
+  ggtitle("Density Plot: Unit.Cost")
+
+plot4 <- ggplot() +
+  geom_density(aes(Total.Revenue, fill = "Small"), alpha = .2, data = data.small) +
+  geom_density(aes(Total.Revenue, fill = "Large"), alpha = .2, data = data.large) +
+  scale_fill_manual(name = "Dataset", values = c(Small = "blue", Large = "orange")) +
+  ggtitle("Density Plot: Total.Revenue")
+
+plot5 <- ggplot() +
+  geom_density(aes(Total.Cost, fill = "Small"), alpha = .2, data = data.small) +
+  geom_density(aes(Total.Cost, fill = "Large"), alpha = .2, data = data.large) +
+  scale_fill_manual(name = "Dataset", values = c(Small = "blue", Large = "orange")) +
+  ggtitle("Density Plot: Total.Cost")
+
+plot6 <- ggplot() +
+  geom_density(aes(Total.Profit, fill = "Small"), alpha = .2, data = data.small) +
+  geom_density(aes(Total.Profit, fill = "Large"), alpha = .2, data = data.large) +
+  scale_fill_manual(name = "Dataset", values = c(Small = "blue", Large = "orange")) +
+  ggtitle("Density Plot: Total.Profit")
+
+
+ggarrange(plot2,
+          plot3, plot4,
+          plot5, plot6,
+          ncol = 2, nrow = 3)
+```
+
+
+```{r}
+p1 <- ggplot(data.small, aes(x = Region)) +
+  geom_bar() +
+  coord_flip()
+
+p2 <- ggplot(data.large, aes(x = Region)) +
+  geom_bar() +
+  coord_flip()
+
+
+p3 <- ggplot(data.small, aes(x = Country)) +
+  geom_bar() +
+  coord_flip()
+
+p4 <- ggplot(data.large, aes(x = Country)) +
+  geom_bar() +
+  coord_flip()
+
+
+p5 <- ggplot(data.small, aes(x = Item.Type)) +
+  geom_bar() +
+  coord_flip()
+
+p6 <- ggplot(data.large, aes(x = Item.Type)) +
+  geom_bar() +
+  coord_flip()
+
+ggarrange(p1, p2,
+          p3, p4,
+          p5, p6,
+          ncol = 2, nrow = 3)
+```
+
+
+```{r}
+p7 <- ggplot(data.small, aes(x = Order.Priority)) +
+  geom_bar() +
+  coord_flip()
+
+p8 <- ggplot(data.large, aes(x = Order.Priority)) +
+  geom_bar() +
+  coord_flip()
+
+
+p9 <- ggplot(data.small, aes(x = Sales.Channel)) +
+  geom_bar() +
+  coord_flip()
+
+p10 <- ggplot(data.large, aes(x = Sales.Channel)) +
+  geom_bar() +
+  coord_flip()
+
+
+p11 <- ggplot(data.small, aes(x = Order.Size)) +
+  geom_bar() +
+  coord_flip()
+
+p12 <- ggplot(data.large, aes(x = Order.Size)) +
+  geom_bar() +
+  coord_flip()
+
+ggarrange(p7, p8,
+          p9, p10,
+          p11, p12,
+          ncol = 2, nrow = 3)
+```
+
+# Data Analysis
+
+The main goal I want to achieve through machine learning is if I can predict the `Order.Size` given a number of inputs. The `Order.Size` is an ordered categorical variable, meaning that a classification algorithm will be needed to carry out the prediction. The two algorithms that will be used are Ordinal Logistic Regression and K Nearest Neighbor Classifier.
+
+
+## Small Dataset
+
+
+### Ordinal Logistic Regression
+
+#### Partition Data
+
+The data must be divided into a training and testing set to properly assess the model performance. I elected to use an 80% train set and a 20% test set. 
+
+```{r}
+set.seed(123)
+
+smp_size <- floor(0.8 * nrow(data.small))
+
+train_ind <- sample(seq_len(nrow(data.small)), size = smp_size)
+
+train.small <- data.small[train_ind, ]
+test.small <- data.small[-train_ind, ]
+```
+
+
+#### Create Ordinal Logistic Regression Model
+
+An ordinal logistic regression can be trained using the polyr() function in the MASS library. The model being used is $Order.Size = Unit.Cost + Region + Sales.Channel + year + month$. 
+
+
+```{r}
+m1= polr(Order.Size ~ Unit.Cost + Region + Sales.Channel + year + month, data = train.small, Hess = TRUE)
+
+summary(m1)
+```
+
+#### Assess Model Performance
+
+The model achieved an overall accuracy of 25%.
+
+```{r}
+test.predictions <- predict(m1, newdata = test.small)
+
+
+cm <- table(actual = test.small$Order.Size, predicted =  test.predictions)
+
+cm1 <- confusionMatrix(cm)
+
+cm1
+```
+
+
+### KNN
+
+#### Prepare Data for KNN
+
+KNN uses distance as a means to determining the closest neighbor, therefore all numeric data should be normalized and all categorical predictors be created into dummy variables. I also removed variables that could be derived from other variables like total cost, total profit, and total revenue.
+
+```{r}
+data.knn <- data.small[-c(2,6:8, 11:13)]
+data.knn <- normalize(data.knn)
+
+data.knn$Order.Size <- as.numeric(as.integer(factor(data.knn$Order.Size)))
+```
+
+```{r}
+data.knn <- dummy_cols(data.knn, select_columns = c('Region', 'Item.Type', 'Sales.Channel', 'Order.Priority', 'year', 'month'),
+           remove_selected_columns = TRUE)
+```
+
+
+
+#### Partition Data
+
+```{r}
+set.seed(123)
+
+smp_size <- floor(0.8 * nrow(data.knn))
+
+train_ind <- sample(seq_len(nrow(data.knn)), prob = data.knn$Freq, size = smp_size)
+
+train.small <- data.knn[train_ind, ]
+test.small <- data.knn[-train_ind, ]
+
+train.labels <- train.small$Order.Size
+test.labels <- test.small$Order.Size
+
+train.small <- train.small[c(-6)]
+test.small <- test.small[c(-6)]
+```
+
+#### Create KNN Classifier
+
+I elected to use the square root of the sample size as the value for k.
+```{r}
+m2 <- knn(train.small, test.small, cl = train.labels, k = sqrt(nrow(train.small)))
+```
+
+#### Assess Model Performance
+
+The KNN Classifier had an overall accuracy of 60%. 
+
+```{r}
+cm <- table(actual = test.labels, predicted =  m2)
+
+cm2 <- confusionMatrix(cm)
+
+cm2
+```
+
+## Large Dataset
+
+
+### Ordinal Logistic Regression
+
+#### Partition Data
+
+```{r}
+set.seed(123)
+
+smp_size <- floor(0.8 * nrow(data.large))
+
+train_ind <- sample(seq_len(nrow(data.large)), prob = data.knn$Freq, size = smp_size)
+
+train.large <- data.large[train_ind, ]
+test.large <- data.large[-train_ind, ]
+```
+
+#### Create Ordinal Logistic Regression Model
+
+The variables within this model are the same as the variables in the small dataset ordinal logistic regression model.
+
+```{r}
+m3= polr(Order.Size ~ Unit.Cost + Region + Sales.Channel + year + month, data = train.large, Hess = TRUE)
+summary(m3)
+```
+
+
+#### Assess Model Performance
+
+The overall accuracy is 20.23%
+```{r}
+test.predictions <- predict(m3, newdata = test.large)
+
+
+cm <- table(actual = test.large$Order.Size, predicted =  test.predictions)
+
+cm3 <- confusionMatrix(cm)
+
+cm3
+```
+
+
+### KNN
+
+#### Prepare Data for KNN
+
+```{r}
+
+data.knn <- data.large[-c(2,6:8, 11:13)]
+data.knn <- normalize(data.knn)
+
+data.knn$Order.Size <- as.numeric(as.integer(factor(data.knn$Order.Size)))
+```
+
+```{r}
+data.knn <- dummy_cols(data.knn, select_columns = c('Region', 'Item.Type', 'Sales.Channel', 'Order.Priority', 'year', 'month'),
+           remove_selected_columns = TRUE)
+```
+
+
+
+#### Partition Data
+
+```{r}
+set.seed(123)
+
+smp_size <- floor(0.8 * nrow(data.knn))
+
+train_ind <- sample(seq_len(nrow(data.knn)), prob = data.knn$Freq, size = smp_size)
+
+train.large <- data.knn[train_ind, ]
+test.large <- data.knn[-train_ind, ]
+
+train.labels <- train.large$Order.Size
+test.labels <- test.large$Order.Size
+
+train.large <- train.large[c(-6)]
+test.large <- test.large[c(-6)]
+```
+
+#### Create KNN Model
+
+```{r}
+m4 <- knn(train.large, test.large, cl = train.labels, k = sqrt(nrow(train.large)))
+```
+
+#### Assess Model Performance
+
+The overall accuracy is 99.1%.
+
+```{r}
+cm <- table(actual = test.labels, predicted =  m4)
+
+cm4 <- confusionMatrix(cm)
+
+cm4
+```
+
+## Comparison Between Model Performance
+
+The results echo the effect data size has on parametric and non-parametric algorithms. Parametric models are more constrained and do not need a large amount of data to be trained, though are usually outperformed by their non-parametric algorithms due to the inherent restrictiveness. Nonparametric data, on the other hand, is not restricted and can be very effective if there is an adequate amount of data to suffice the algorithm. KNN outperformed the Ordinal Logistic Regression models in both datasets. There is a clear improvement in the KNN algorithm when more data is present. This effect is likely due to the curse of dimensionality.
+
+```{r}
+accuracy <- c(cm1$overall[1], cm2$overall[1], cm3$overall[1], cm4$overall[1])
+model.type <- c("Ordinal Logistic Regression", "KNN", "Ordinal Logistic Regression", "KNN")
+dataset <- c("Small", "Small", "Large", "Large")
+results <- data.frame(dataset,
+           model.type,
+           accuracy)
+
+kableExtra::kable(results)
+```
+
+
+
+
