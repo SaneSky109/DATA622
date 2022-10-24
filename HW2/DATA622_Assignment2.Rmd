@@ -1,0 +1,414 @@
+---
+title: 'DATA622: Homework 2'
+author: "Eric Lehmphul"
+date: "10/20/2022"
+output: 
+  rmdformats::readthedown:
+    code_folding: show
+
+  
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r, warning=F, message=F}
+library(tidyverse)
+library(ggpubr)
+library(skimr)
+library(caret)
+library(rpart.plot)
+library(performanceEstimation)
+```
+
+
+# Exploratory Analysis
+
+## Data Source
+
+For this assignment, I used the 'Diabetes Dataset' freely available on Kaggle.com (https://www.kaggle.com/datasets/akshaydattatraykhare/diabetes-dataset).  This data source was originally from the **National Institute of Diabetes and Digestive and Kidney Diseases**. This dataset focuses on patients who are females at least 21 years old of Pima Indian heritage. The objective of this data source is to predict whether a patient is likely to have diabetes to aid in diagnosing. There are 9 variables in the dataset: 1 binary indicator variable for diabetes and 8 variables related to medical information about the patient.
+
+
+
+| Variable          | Data Type | Description                                                                                                                                                                         
+|----------------|---------|-------------------------
+| Pregnancies             | Numeric | To express the number of pregnancies                                                                                             
+| Glucose              | Numeric | To express the glucose level in blood                                                                                                                                                              
+| BloodPressure             | Numeric | To express the blood pressure measurement                                                                                                     
+| SkinThickness               | Numeric | To express the thickness of the skin                                                                                                      
+| Insulin             | Numeric | To express the insulin level in blood      
+| BMI            | Numeric | To express the body mass index 	
+| DiabetesPedigreeFunction | Numeric | To express the likelihood of diabetes based on family history                                                                                                                     
+| Age           	|  Numeric | To express age                                                                                                                       
+| Outcome     | Categorical | To express the  whether someone has diabetes. 1 is Yes and 0 is No                                                                                                                     
+
+
+```{r}
+diabetes <- read.csv("https://raw.githubusercontent.com/SaneSky109/DATA622/main/HW2/Data/diabetes.csv")
+```
+
+```{r}
+# adjust data types
+diabetes$Pregnancies <- as.numeric(diabetes$Pregnancies)
+diabetes$Glucose <- as.numeric(diabetes$Glucose)
+diabetes$BloodPressure <- as.numeric(diabetes$BloodPressure)
+diabetes$SkinThickness <- as.numeric(diabetes$SkinThickness)
+diabetes$Insulin <- as.numeric(diabetes$Insulin)
+diabetes$Age <- as.numeric(diabetes$Age)
+diabetes$Outcome <- as.factor(diabetes$Outcome)
+```
+
+
+
+## Summary Statistics
+
+### Before Cleaning Data
+
+At a quick glance of the summary statistics:
+
+* There are no missing values present in the dataset
+* 25% of the women have a glucose level of 140 - 199 mg/dL, indicating prediabetes (https://www.mayoclinic.org/diseases-conditions/diabetes/diagnosis-treatment/drc-20371451#:~:text=A%20blood%20sugar%20level%20less,L)%20means%20you%20have%20prediabetes.)
+* More than 75% of women have a BMI of higher than the "normal" range of 18.5-24.9.
+* There are a wide range of ages in the dataset from 21 to 81 years old.
+* Blood Pressure has values of 0 which should be investigated. Zero DBP can be attributed to monitor malfunction so I will remove all rows with a zero for Blood Pressure. The rows with 0 in BloodPressure also had 0s for SkinThickness and Glucose. This is why I elected to drop the rows.
+
+```{r}
+skim(diabetes)
+```
+
+
+```{r}
+diabetes.new <- diabetes %>% filter(BloodPressure != 0)
+```
+
+### After Cleaning Data
+
+As 35 rows of zeros were removed, the mean of `Glucose`, `BloodPressure`, and `SkinThickness` increased. The other variables remained similar to the precleaned data summary.
+
+```{r}
+skim(diabetes.new)
+```
+
+
+## Check the Target Variable Distribution
+
+There is a class imbalance present in this dataset. Imbalanced data can prove to be quite problematic in classifying the minority class. I will conduct oversampling using SMOTE before modeling the data to give the model a better chance at classifying the minority class, that a women has Diabetes.
+
+```{r}
+diabetes.new %>% ggplot(aes(Outcome)) +
+  geom_bar(fill = "#04354F") +
+  geom_text(aes(label = ..count..), stat = "count", vjust = 1.5, colour = "white")
+```
+
+
+## Data Distributions
+
+### Aggregate
+
+* Most women are in there 20s and early 30s
+* After removing rows with 0, BloodPressure is normally distributed
+* BMI is also normally distributed
+* Most people have a small chance of having diabetes via family affiliation
+* Most people have a normal glucose level
+* Insulin and SkinThickness have a large number of 0 values
+* Pregnacies are right skewed
+
+```{r}
+diabetes.new %>% 
+  gather(-c(Outcome), key = variable, value = value) %>%
+  ggplot(., aes(x = value)) +
+  geom_histogram(aes(x=value, y = ..density..), bins = 30, fill="#69b3a2", color="#e9ecef") +
+  geom_density(aes(x=value), color='red', lwd = 1.75) +
+  facet_wrap(~variable, scales ="free", ncol = 4)
+```
+
+
+```{r}
+p1 <- diabetes.new %>% 
+  ggplot(aes(x = Pregnancies, fill = Outcome)) +
+  geom_density(alpha = 0.5)
+
+p2 <- diabetes.new %>% 
+  ggplot(aes(x = Glucose, fill = Outcome)) +
+  geom_density(alpha = 0.5)
+
+p3 <- diabetes.new %>% 
+  ggplot(aes(x = BloodPressure, fill = Outcome)) +
+  geom_density(alpha = 0.5)
+
+
+p4 <- diabetes.new %>% 
+  ggplot(aes(x = Insulin, fill = Outcome)) +
+  geom_density(alpha = 0.5)
+
+
+p5 <- diabetes.new %>% 
+  ggplot(aes(x = BMI, fill = Outcome)) +
+  geom_density(alpha = 0.5)
+
+p6 <- diabetes.new %>% 
+  ggplot(aes(x = DiabetesPedigreeFunction, fill = Outcome)) +
+  geom_density(alpha = 0.5)
+
+
+p7 <- diabetes.new %>% 
+  ggplot(aes(x = Age, fill = Outcome)) +
+  geom_density(alpha = 0.5)
+
+ggarrange(p1, p2, p3,
+          p4, p5, p6,
+          p7, nrow = 4, ncol = 2)
+```
+
+
+### By Class: Outcome
+
+Both the histogram and boxplots indicate that Glucose, BloodPressure, and BMI, Pregnancies, and Age should be strong predictors for classifying the outcome of a patient.
+
+```{r}
+p1 <- diabetes.new %>% 
+  ggplot(aes(x = Pregnancies, fill = Outcome)) +
+  geom_boxplot()
+
+p2 <- diabetes.new %>% 
+  ggplot(aes(x = Glucose, fill = Outcome)) +
+  geom_boxplot()
+
+p3 <- diabetes.new %>% 
+  ggplot(aes(x = BloodPressure, fill = Outcome)) +
+  geom_boxplot()
+
+
+p4 <- diabetes.new %>% 
+  ggplot(aes(x = Insulin, fill = Outcome)) +
+  geom_boxplot()
+
+
+p5 <- diabetes.new %>% 
+  ggplot(aes(x = BMI, fill = Outcome)) +
+  geom_boxplot()
+
+p6 <- diabetes.new %>% 
+  ggplot(aes(x = DiabetesPedigreeFunction, fill = Outcome)) +
+  geom_boxplot()
+
+
+p7 <- diabetes.new %>% 
+  ggplot(aes(x = Age, fill = Outcome)) +
+  geom_boxplot()
+
+ggarrange(p1, p2, p3,
+          p4, p5, p6,
+          p7, nrow = 4, ncol = 2)
+```
+
+
+# Modeling
+
+The goal of this assignment is to generate two different Decision Tree algorithms and a Random Forest algorithm and compare the results. To achieve this it is important to first partition the data into training and testing.
+
+### Create Data Partition
+
+The training set contains 80% of the dataset and the remaining 20% will be used for testing the model performance.
+
+```{r}
+set.seed(123)
+
+train_ind <- createDataPartition(diabetes.new[,"Outcome"], p = 0.8, list = FALSE)
+
+train <- diabetes.new[train_ind, ]
+test <- diabetes.new[-train_ind, ]
+```
+
+
+### Oversample Training Data to Balance Class using SMOTE
+
+As mentioned above, the data source is imbalanced. To account for this the training dataset will undergo a SMOTE algorithm to synthetically create new data points to be used to balance the classes. This should allow the model to more accurately predict whether a patient has Diabetes.
+
+```{r}
+train.balanced <- smote(Outcome ~ ., data = train, perc.over = 1)
+```
+
+
+```{r}
+p1 <- train %>% ggplot(aes(Outcome)) +
+  geom_bar(fill = "#133ECE") +
+  geom_text(aes(label = ..count..), stat = "count", vjust = 1.5, colour = "white") +
+  ggtitle("Before Oversampling")
+
+p2 <- train.balanced %>% ggplot(aes(Outcome)) +
+  geom_bar(fill = "#CE8D13") +
+  geom_text(aes(label = ..count..), stat = "count", vjust = 1.5, colour = "black") +
+  ggtitle("After Oversampling")
+
+ggarrange(p1, p2, nrow = 1, ncol = 2)
+```
+
+## Decision Trees
+
+I elected to build a simple decision tree and a much more complicated decision tree to see if there were vast differences in model performance. The models are:
+
+* Using the variables: `Glucose`, `BMI`, and `Age`. 
+  - Hyperparameters: 10 fold cross validation and a tune length of 5
+* Using all variables in the dataset.
+  - Hyperparameters: 10 fold cross validation and a tune length of 200
+
+### Model 1: Decision Tree Using the variables: `Glucose`, `BMI`, and `Age`
+
+This first model only used three variables to predict `Outcome`. The decision tree plot indicates that Glucose is the most important variable for determining Diabetes followed by `BMI` and lastly `Age`. The model is simple only having 5 terminal nodes.
+
+```{r}
+set.seed(123)
+
+trctrl <- trainControl(method = "cv",
+                       number = 10) 
+
+tree1 <- train(Outcome ~ Glucose + BMI + Age,
+               method = "rpart",
+               trControl = trctrl,
+               tuneLength = 5,
+               data = train.balanced)
+
+rpart.plot(tree1$finalModel)
+```
+
+
+
+
+#### Model Results
+
+The model achieved an accuracy of 0.64. Though I would argue that overall accuracy is not the best metric for this type of problem as the data is imbalanced. Instead I will focus on Kappa, Precision, and Sensitivity. The Kappa is 0.352, Precision is 0.48, and Sensitivity is 0.94, The model was very good capturing almst all postive results. Though it had a terrible precision score as it had a large number of false positive predictions.
+
+```{r}
+pred <- predict(tree1, newdata = test)
+
+cm1 <- confusionMatrix(data = pred, reference = test$Outcome, positive = "1")
+
+cm1
+```
+
+
+### Model 2: Decision Tree Using all variables
+
+This decision tree uses all the variables in the dataset to predict the Outcome variable. This model is much more complex than the basic 3 variable model. There are a total of 20 terminal nodes and 19 decision nodes. Glucose, BMI, and Age are still the most important factors in determining a patients likelihood of being a Diabetic. Other important variables include Pregnancies, DiabetesPedegreeFunction, and BloodPressure. Insulin and SkinThickness contribute the least to the model.
+
+```{r}
+set.seed(123)
+
+trctrl <- trainControl(method = "cv",
+                       number = 10) 
+
+tree2 <- train(Outcome ~ .,
+               method = "rpart",
+               trControl = trctrl,
+               tuneLength = 200,
+               data = train.balanced)
+
+rpart.plot(tree2$finalModel)
+```
+
+
+#### Model Results
+
+This model achieved an overall accuracy of 0.75, Kappa of 0.48, Precision of 0.59, and Sensitivity of 0.8. This model is better at correctly classifying whether a patient is a diabetic than the first model due to the higher precision. 
+
+
+```{r}
+pred <- predict(tree2, newdata = test)
+result <- table(test$Outcome, pred)
+
+cm2 <- confusionMatrix(data = pred, reference = test$Outcome, positive = "1")
+
+cm2
+```
+
+
+## Random Forest
+
+### Model 3: Random Forest
+
+The final model for this assignment is a Random Forest model using all variables and the hyperparameters of 10 fold cross validation and ntree = 250. The model seems to perform best using only a handful of variables. The most important features in the Random Forest are Glucose, BMI, Age, DiabetesPredigreeFunction, and BloodPressure. This is similar to model 2.
+
+```{r}
+set.seed(123)
+
+forest <- train(Outcome ~ .,
+                method = "rf",
+                trControl = trctrl,
+                ntree = 250,
+                data = train.balanced)
+```
+
+
+```{r}
+plot(forest)
+```
+
+```{r}
+plot(varImp(forest))
+```
+
+
+#### Model Results
+
+The Random Forest achieved the following metrics:
+
+* Overall Accuracy of 0.79
+* Kappa of 0.57
+* Precision of 0.63
+* Sensitivity of 0.73
+
+The Random Forest did the best to predict the Outcome variable of determining if a patient is diabetic. 
+
+```{r}
+pred <- predict(forest, newdata = test)
+result <- table(test$Outcome, pred)
+
+cm3 <- confusionMatrix(data = pred, reference = test$Outcome, positive = "1")
+
+cm3
+```
+
+
+
+
+# Model Comparisons
+
+The best model in all metrics, except sensitivity, is the Random Forest Model (Model 3). Model 1 is the most simple of the models which is best if interpretability is desired, but is outperformed my the other models. Model 2 has greater predictive power than Model 1 but does not outperform Model 3. Model 3 has the best predictive power, but is the least interpretable of the Models. As the objective of the assignment is to predict the outcome of a particular feature, I believe Model 3 is the best model to use for this classification task.
+
+```{r}
+accuracy <- c(cm1$overall[1], cm2$overall[1], cm3$overall[1])
+kappa.val <- c(cm1$overall["Kappa"], cm2$overall["Kappa"], cm3$overall["Kappa"])
+precision.val <- c(cm1$byClass['Pos Pred Value'], cm2$byClass['Pos Pred Value'], cm3$byClass['Pos Pred Value'] )
+sensitivity.val <- c(cm1$byClass['Sensitivity'], cm2$byClass['Sensitivity'], cm3$byClass['Sensitivity'])
+
+specificity.val <- c(cm1$byClass['Specificity'], cm2$byClass['Specificity'], cm3$byClass['Specificity'])
+
+model.type <- c("Model 1: Simple Decision Tree", "Model 2: Complex Decision Tree", "Model 3: Random Forest")
+results <- data.frame(model.type,
+           accuracy,
+           kappa.val,
+           precision.val,
+           sensitivity.val,
+           specificity.val)
+
+results$f1.score <- 2 * ((results$precision.val * results$sensitivity.val) / (results$precision.val + results$sensitivity.val))
+
+results <- results %>%
+  mutate_if(is.numeric,
+            round,
+            digits = 3)
+
+kableExtra::kbl(results) %>%
+  kableExtra::kable_classic()
+```
+
+
+
+# Conclusion
+
+This assignment showcased some of the pros and cons to using one algorithm to another. For example, the decision trees produced a result extremely fast but at a cost of predictive power. Random forests, on the other hand, produced a model with much greater predictive power at the cost of both computational speed and model interpretability. There is a stark difference in model interpretability between the simple (Model 1) and the complex (Model 2) decision trees. Model 1 only used 4 decision nodes to generate the classifier which is easy to follow. Model 2 used 19 decision nodes (almost 5 times the number of decisions) to generate an outcome. The higher the decision nodes, the more easily a person can get lost when attempting to understand the model. 
+
+Like what was mentioned in the article, there are good, bad, and ugly sides to using a decision tree. Unbalanced data is not great for tree based models. To give the model a fighting chance at predicting the positive class, resampling of the data was used. This adjustment paired with the 10 fold cross validation overcame the usability problem through continuous improvement of the models.
