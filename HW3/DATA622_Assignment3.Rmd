@@ -1,0 +1,732 @@
+---
+title: 'DATA622: Homework 3'
+author: "Eric Lehmphul"
+date: "11/7/2022"
+output:
+  rmdformats::readthedown:
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r, warning=F, message=F}
+library(tidyverse)
+library(reshape2)
+library(ggpubr)
+library(skimr)
+library(caret)
+library(rpart.plot)
+library(performanceEstimation)
+library(e1071)
+library(splitTools)
+
+library(cluster)
+library(factoextra)
+library(ggfortify)
+```
+
+# Data Exploration
+
+## Data Source
+
+For Assignment 2, I used the 'Diabetes Dataset' freely available on Kaggle.com, therefore it will also be used to complete the Assignment 3 task to use Support Vector Machines to compare to Assignment 2 results. (https://www.kaggle.com/datasets/akshaydattatraykhare/diabetes-dataset).  
+
+
+This data source was originally from the **National Institute of Diabetes and Digestive and Kidney Diseases**. This dataset focuses on patients who are females at least 21 years old of Pima Indian heritage. The objective of this data source is to predict whether a patient is likely to have diabetes to aid in diagnosing. There are 9 variables in the dataset: 1 binary indicator variable for diabetes and 8 variables related to medical information about the patient.
+
+
+
+| Variable          | Data Type | Description                                                                                                                                                                         
+|----------------|---------|-------------------------
+| Pregnancies             | Numeric | To express the number of pregnancies                                                                                             
+| Glucose              | Numeric | To express the glucose level in blood                                                                                                                                                              
+| BloodPressure             | Numeric | To express the blood pressure measurement                                                                                                     
+| SkinThickness               | Numeric | To express the thickness of the skin                                                                                                      
+| Insulin             | Numeric | To express the insulin level in blood      
+| BMI            | Numeric | To express the body mass index 	
+| DiabetesPedigreeFunction | Numeric | To express the likelihood of diabetes based on family history                                                                                                                     
+| Age           	|  Numeric | To express age                                                                                                                       
+| Outcome     | Categorical | To express the  whether someone has diabetes. 1 is Yes and 0 is No    
+
+
+## Data Preparation
+
+I decided to remove all rows that contained a 0 for `BloodPressure`, `SkinThickness`, and `BMI` as it is not humanly possible to survive with those measures. I believe that those rows contained incomplete data and should be excluded from modeling.
+
+```{r}
+diabetes <- read.csv("https://raw.githubusercontent.com/SaneSky109/DATA622/main/HW2/Data/diabetes.csv")
+```
+
+```{r}
+# adjust data types
+diabetes$Pregnancies <- as.numeric(diabetes$Pregnancies)
+diabetes$Glucose <- as.numeric(diabetes$Glucose)
+diabetes$BloodPressure <- as.numeric(diabetes$BloodPressure)
+diabetes$SkinThickness <- as.numeric(diabetes$SkinThickness)
+diabetes$Insulin <- as.numeric(diabetes$Insulin)
+diabetes$Age <- as.numeric(diabetes$Age)
+diabetes$Outcome <- as.factor(diabetes$Outcome)
+```
+
+
+```{r}
+diabetes.new <- diabetes %>%
+  filter(BloodPressure != 0) %>%
+  filter(SkinThickness != 0) %>% 
+  filter(BMI != 0)
+```
+
+
+## Summary Statistics
+
+
+```{r}
+skim(diabetes.new)
+```
+
+
+## Check the Target Variable Distribution
+
+There is a class imbalance present in this dataset. Imbalanced data can prove to be quite problematic in classifying the minority class. I will conduct oversampling using SMOTE before modeling the data to give the model a better chance at classifying the minority class, that a women has Diabetes.
+
+```{r}
+diabetes.new %>% ggplot(aes(Outcome)) +
+  geom_bar(fill = "#04354F") +
+  geom_text(aes(label = ..count..), stat = "count", vjust = 1.5, colour = "white")
+```
+
+
+## Data Distributions
+
+There appears to be a difference between the two target classes amongst all of the variables.
+
+```{r}
+p1 <- diabetes.new %>% 
+  ggplot(aes(x = Pregnancies, fill = Outcome)) +
+  geom_boxplot()
+
+p2 <- diabetes.new %>% 
+  ggplot(aes(x = Glucose, fill = Outcome)) +
+  geom_boxplot()
+
+p3 <- diabetes.new %>% 
+  ggplot(aes(x = BloodPressure, fill = Outcome)) +
+  geom_boxplot()
+
+
+p4 <- diabetes.new %>% 
+  ggplot(aes(x = Insulin, fill = Outcome)) +
+  geom_boxplot()
+
+
+p5 <- diabetes.new %>% 
+  ggplot(aes(x = BMI, fill = Outcome)) +
+  geom_boxplot()
+
+p6 <- diabetes.new %>% 
+  ggplot(aes(x = DiabetesPedigreeFunction, fill = Outcome)) +
+  geom_boxplot()
+
+
+p7 <- diabetes.new %>% 
+  ggplot(aes(x = Age, fill = Outcome)) +
+  geom_boxplot()
+
+ggarrange(p1, p2, p3,
+          p4, p5, p6,
+          p7, nrow = 4, ncol = 2)
+```
+
+## Unsupervised Methods
+
+### Prepare Data
+
+As clustering algorithms utilize distance metrics, it is important to normalize of the data.
+
+```{r}
+cluster.data <- diabetes.new[,-9]
+
+cluster.data <- as.data.frame(scale(cluster.data))
+```
+
+
+
+### K-means and Principal Component Analysis 
+
+K-means and Principal Component Analysis were performed to further explore the dataset. This dataset does not appear to be a strong candidate for clustering as the PCA shows that most of the data is grouped in a single cohesive shape. Visualizing the first two principal components show that there is some overlap between the two classes.
+
+```{r}
+set.seed(12345)
+
+# function to compute total within-cluster sum of square 
+wss <- function(k) {
+  kmeans(cluster.data, k, nstart = 20 )$tot.withinss
+}
+
+# Compute and plot wss for k = 1 to k = 15
+k.values <- 1:15
+
+# extract wss for 2-15 clusters
+wss_values <- map_dbl(k.values, wss)
+
+plot(k.values, wss_values,
+       type="b", pch = 19, frame = FALSE, 
+       xlab="Number of clusters K",
+       ylab="Total within-clusters sum of squares")
+```
+
+
+```{r}
+fviz_cluster(kmeans(cluster.data, centers = 2, nstart = 20), data = cluster.data)
+
+pca <- prcomp(cluster.data,
+              center = TRUE,
+              scale. = TRUE)
+
+cluster.data1 <- cluster.data
+cluster.data1$Outcome <- diabetes.new$Outcome
+autoplot(pca, data = cluster.data1, colour="Outcome")
+```
+
+# Assignment 2: Decision Tree and Random Forest
+
+## Modeling
+
+The data was randomly split into a training set and testing set with 80% of the data used for training and the remaining 20% used for evaluating model performance. The data source is imbalanced. To account for this the training dataset will undergo a SMOTE algorithm to synthetically create new data points to be used to balance the classes. This should allow the model to more accurately predict whether a patient has Diabetes. Repeated k-Fold Cross Validation was used to gain a better understanding of the estimated performance of the machine learning models. I selected k to be 10 and for there to be 3 repeats.
+
+```{r}
+set.seed(12345)
+
+train_ind <- createDataPartition(diabetes.new[,"Outcome"], p = 0.8, list = FALSE)
+
+train <- diabetes.new[train_ind, ]
+test <- diabetes.new[-train_ind, ]
+```
+
+
+```{r}
+set.seed(12345)
+train.balanced <- smote(Outcome ~ ., data = train, perc.over = 1)
+```
+
+
+
+## Decision Trees
+
+For Assignment 2, I chose to build a simple decision tree and a much more complicated decision tree to see if there were vast differences in model performance. The models are:
+
+* Using the variables: `Glucose`, `BMI`, and `Age`. 
+  - Hyperparameters: 10 fold cross validation with 3 repeats and a tune length of 5
+* Using all variables in the dataset.
+  - Hyperparameters: 10 fold cross validation with 3 repeats and a tune length of 200
+
+### Model A: Decision Tree Using the variables: `Glucose`, `BMI`, and `Age`
+
+This first model only used three variables to predict `Outcome`. The decision tree plot indicates that Glucose is the most important variable for determining Diabetes followed by `BMI` and lastly `Age`. The model is simple only having 8 terminal nodes.
+
+```{r}
+set.seed(12345)
+
+trctrl <- trainControl(method = "repeatedcv", number = 10, repeats = 3)
+
+tree1 <- train(Outcome ~ Glucose + BMI + Age,
+               method = "rpart",
+               trControl = trctrl,
+               tuneLength = 5,
+               data = train.balanced)
+
+rpart.plot(tree1$finalModel)
+```
+
+
+
+
+#### Model Results
+
+The model achieved an accuracy of 0.74. Though I would argue that overall accuracy is not the best metric for this type of problem as the data is imbalanced. Instead I will focus on Kappa, Precision, Sensitivity, and Specificity. The Kappa is 0.46, Precision is 0.57, Sensitivity is 0.83, and Specificity is 0.69. The model was very good capturing almost all positive results. Though it had a terrible precision score as it had a large number of false positive predictions.
+
+```{r}
+pred <- predict(tree1, newdata = test)
+
+cmA <- confusionMatrix(data = pred, reference = test$Outcome, positive = "1")
+
+cmA
+```
+
+
+### Model B: Decision Tree Using all variables
+
+This decision tree uses all the variables in the dataset to predict the Outcome variable. This model is much more complex than the basic 3 variable model. There are a total of 22 terminal nodes and 21 decision nodes. Glucose and Age are still the most important factors in determining a patients likelihood of being a Diabetic. Other important variables include SkinThickness and DiabetesPedegreeFunction.
+
+```{r}
+set.seed(12345)
+
+tree2 <- train(Outcome ~ .,
+               method = "rpart",
+               trControl = trctrl,
+               tuneLength = 200,
+               data = train.balanced)
+
+rpart.plot(tree2$finalModel)
+```
+
+
+#### Model Results
+
+This model achieved an overall accuracy of 0.72, Kappa of 0.43, Precision of 0.56, and Sensitivity of 0.77. This model is slightly worse at correctly classifying whether a patient is a diabetic compared the first model due to the lower Kappa and sensitivity values. 
+
+
+```{r}
+pred <- predict(tree2, newdata = test)
+result <- table(test$Outcome, pred)
+
+cmB <- confusionMatrix(data = pred, reference = test$Outcome, positive = "1")
+
+cmB
+```
+
+
+## Random Forest
+
+### Model C: Random Forest
+
+The final model for this assignment is a Random Forest model using all variables and the hyperparameters of 10 fold cross validation and ntree = 250. The model seems to perform best using only a handful of variables. The most important features in the Random Forest are Glucose, Age, BMI, DiabetesPredigreeFunction, and Pregnancies. This is similar to model 2.
+
+```{r}
+set.seed(12345)
+
+forest <- train(Outcome ~ .,
+                method = "rf",
+                trControl = trctrl,
+                ntree = 250,
+                data = train.balanced)
+```
+
+
+```{r}
+plot(forest)
+```
+
+```{r}
+plot(varImp(forest))
+```
+
+
+#### Model Results
+
+The Random Forest achieved the following metrics:
+
+* Overall Accuracy of 0.82
+* Kappa of 0.58
+* Precision of 0.72
+* Sensitivity of 0.74
+
+The Random Forest performed the best of the Assignment 2 Models (tree based models) to predict the Outcome variable of determining if a patient is diabetic. 
+
+```{r}
+pred <- predict(forest, newdata = test)
+result <- table(test$Outcome, pred)
+
+cmC <- confusionMatrix(data = pred, reference = test$Outcome, positive = "1")
+
+cmC
+```
+
+
+# Assignment 3: Support Vector Machine
+
+## Modeling
+
+I elected to use the same variables that were used in Assignment 2 that trained the decision tree and random forest models to be used to train the support vector machine models. Using the exact same variables should allow for a true comparison between the algorithms on the dataset.
+
+The data has undergone feature scaling to reduce bias. SVM calculates the distance between data points to find the optimal support vectors which would lead to the best decision boundary. Using non-scaled data will negatively affect the model's ability to discover the true patterns present in the data as the distance between observations can greatly differ when the scale is different for each variable.
+
+
+```{r}
+diabetes.new.scale <- diabetes.new
+diabetes.new.scale[,-9] <- scale(diabetes.new[,-9])
+
+data_long1 <- melt(diabetes.new[,1:8])
+data_long2 <- melt(diabetes.new.scale[,1:8])
+
+
+
+p1 <- ggplot(data_long1, aes(x = variable, y = value)) +
+  geom_boxplot() +
+  ggtitle("Non-Scaled Data")
+
+
+p2 <- ggplot(data_long2, aes(x = variable, y = value)) +
+  geom_boxplot() +
+  ggtitle("Scaled Data")
+
+ggarrange(p1, p2, nrow = 1, ncol = 2)
+```
+
+
+```{r}
+set.seed(12345)
+
+train_ind <- createDataPartition(diabetes.new[,"Outcome"], p = 0.8, list = FALSE)
+
+train <- diabetes.new[train_ind, ]
+test <- diabetes.new[-train_ind, ]
+```
+
+
+
+```{r}
+set.seed(12345)
+train.balanced <- smote(Outcome ~ ., data = train, perc.over = 1)
+```
+
+## Model 1: Linear SVM using the variables: `Glucose`, `BMI`, and `Age`
+
+The first SVM model used only three variables to predict `Outcome`. The model underwent a grid search to identify the best hyperparameter for C given a linear kernel. 
+
+```{r}
+set.seed(12345)
+trctrl <- trainControl(method = "repeatedcv", number = 10, repeats = 3)
+grid_linear <- expand.grid(C = c(0.01, 0.05, 0.1, 0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 5, 10))
+```
+
+
+```{r}
+set.seed(12345)
+
+svm.model1 <- train(Outcome ~ Glucose + BMI + Age, 
+      data = train.balanced, method = "svmLinear",
+      trControl=trctrl,
+      tuneGrid = grid_linear,
+      tuneLength = 10)
+```
+
+#### Model Results
+
+The Simple Linear SVM model achieved the following metrics:
+
+* Overall Accuracy of 0.81
+* Kappa of 0.597
+* Precision of 0.67
+* Sensitivity of 0.83
+
+This model's performance is comparable to the Random Forest model from Assignment 2.
+
+```{r}
+set.seed(12345)
+
+pred <- predict(svm.model1, newdata = test)
+
+cm1 <- confusionMatrix(data = pred, reference = test$Outcome, positive = "1")
+
+cm1
+```
+
+
+## Model 2: Radial SVM using the variables: `Glucose`, `BMI`, and `Age`
+
+This second SVM model also uses three variables to determine the `Outcome` of a patient. This model used the radial kernel (RBF) instead of a linear kernel to try to classify the data. Both C and sigma were tuned to find the optimal model with this kernel. 
+
+```{r}
+set.seed(12345)
+
+grid_radial <- expand.grid(
+  sigma = c(0.01, 0.02, 0.025, 0.03, 0.04,
+ 0.05, 0.06, 0.07,0.08, 0.09, 0.1, 0.25, 0.5, 0.75,0.9, 1),
+  C = c(0.01, 0.05, 0.1, 0.25, 0.5, 0.75,
+ 1, 1.5, 2,5, 10))
+
+```
+
+```{r}
+set.seed(12345)
+
+svm.model2 <- train(Outcome ~ Glucose + BMI + Age, 
+      data = train.balanced, method = "svmRadial",
+      trControl=trctrl,
+      tuneGrid = grid_radial,
+      tuneLength = 10)
+```
+
+#### Model Results
+
+The Simple Radial SVM model reached the following metrics:
+
+* Overall Accuracy of 0.73
+* Kappa of 0.44
+* Precision of 0.58
+* Sensitivity of 0.71
+
+The model does not out perform the Simple Linear SVM model. This model's performance is comparable to the Simple Decision Tree model from Assignment 2.
+
+```{r}
+set.seed(12345)
+
+pred <- predict(svm.model2, newdata = test)
+
+cm2 <- confusionMatrix(data = pred, reference = test$Outcome, positive = "1")
+
+cm2
+```
+
+## Model 3: Polynomial SVM using the variables: `Glucose`, `BMI`, and `Age`
+
+This SVM model  uses three variables to determine the `Outcome` of a patient leveraging the polynomial kernel. The polynomial kernel has three hyperparameters that need to be tuned to find the optimal model. They are degree, scale, and C which have been tuned. The model was only tuned up to the 4th degree.  
+
+```{r}
+set.seed(12345)
+
+grid_poly <- expand.grid(
+  degree = c(2,3,4),
+  scale = c(0.01, 0.02, 0.025, 0.03, 0.04,
+ 0.05, 0.06, 0.07,0.08, 0.09, 0.1, 0.25, 0.5, 0.75,0.9, 1),
+  C = c(0.01, 0.05, 0.1, 0.25, 0.5, 0.75,
+ 1, 1.5, 2,5, 10))
+```
+
+
+```{r}
+set.seed(12345)
+
+svm.model3 <- train(Outcome ~ Glucose + BMI + Age, 
+      data = train.balanced, method = "svmPoly",
+      trControl=trctrl,
+      tuneGrid = grid_poly,
+      tuneLength = 10)
+```
+
+
+#### Model Results
+
+The Simple Polynomial SVM model reached the following metrics:
+
+* Overall Accuracy of 0.80
+* Kappa of 0.57
+* Precision of 0.675
+* Sensitivity of 0.77
+
+The model does not out perform the Simple Linear SVM model, but has close results. 
+
+```{r}
+set.seed(12345)
+
+pred <- predict(svm.model3, newdata = test)
+
+cm3 <- confusionMatrix(data = pred, reference = test$Outcome, positive = "1")
+
+cm3
+```
+
+
+
+## Model 4 Linear SVM usng all variables
+
+This model uses all available variables in the dataset to predict `Outcome`. The same tuning procedure as Model 1 was conducted as they both use a linear kernel.
+
+```{r}
+set.seed(12345)
+
+svm.model4 <- train(Outcome ~ ., 
+      data = train.balanced, method = "svmLinear",
+      trControl=trctrl,
+      tuneGrid = grid_linear,
+      tuneLength = 10)
+```
+
+
+#### Model Results
+
+The Complex Linear SVM model reached the following metrics:
+
+* Overall Accuracy of 0.79
+* Kappa of 0.54
+* Precision of 0.67
+* Sensitivity of 0.74
+
+The model does not out perform the Simple Linear SVM model. It appear that adding more features hurt the model's performance.
+
+
+```{r}
+set.seed(12345)
+
+pred <- predict(svm.model4, newdata = test)
+
+cm4 <- confusionMatrix(data = pred, reference = test$Outcome, positive = "1")
+
+cm4
+```
+
+
+## Model 5: Radial SVM using all variables
+
+This model uses all available variables in the dataset to predict `Outcome`. The same tuning procedure as Model 2 was conducted as they both use a radial kernel.
+
+```{r}
+set.seed(12345)
+
+svm.model5 <- train(Outcome ~ ., 
+      data = train.balanced, method = "svmRadial",
+      trControl=trctrl,
+      tuneGrid = grid_radial,
+      tuneLength = 10)
+```
+
+
+#### Model Results
+
+The Complex Radial SVM model reached the following metrics:
+
+* Overall Accuracy of 0.679
+* Kappa of 0.35
+* Precision of 0.51
+* Sensitivity of 0.743
+
+The model does not out perform the Simple Linear SVM model. It also does worse than the Simple Radial SVM model.
+
+
+```{r}
+set.seed(12345)
+
+pred <- predict(svm.model5, newdata = test)
+
+cm5 <- confusionMatrix(data = pred, reference = test$Outcome, positive = "1")
+
+cm5
+```
+
+## Model 6: Polynomial SVM using all variables
+
+The last model applies the polynomial kernel to classify the `Outcome` using all available features in the dataset. This model underwent the same tuning procedure as the simple polynomial SVM (Model 3).
+
+```{r}
+set.seed(12345)
+
+svm.model6 <- train(Outcome ~ ., 
+      data = train.balanced, method = "svmPoly",
+      trControl=trctrl,
+      tuneGrid = grid_poly,
+      tuneLength = 10)
+```
+
+
+#### Model Results
+
+The Complex Polynomial SVM model reached the following metrics:
+
+* Overall Accuracy of 0.698
+* Kappa of 0.33
+* Precision of 0.54
+* Sensitivity of 0.57
+
+The model does not out perform the Simple Linear SVM model. It also does worse than its counterpart, Simple Polynomial SVM model.
+
+
+```{r}
+set.seed(12345)
+
+pred <- predict(svm.model6, newdata = test)
+
+cm6 <- confusionMatrix(data = pred, reference = test$Outcome, positive = "1")
+
+cm6
+```
+
+
+# Comparison of All Models for Assignment 2 and Assignment 3
+
+Assignment 2 focused on the use of tree algorithms to classify if a patient is likely to have diabetes. The best tree based model in all metrics, except sensitivity, is the Random Forest Model (Model C). Interestingly, the simple decision tree (Model A) and complex decision tree (Model B) had very similar results with the simple decision tree performing only a percent or two better in most metrics.
+
+Assignment 3 aimed to find a classifier using the Support Vector Machine algorithm using the same dataset. The model with the best combination of precision and recall is the simple linear SVM model (Model 1). The complex linear SVM model (Model 4) had worse metrics across most of the metrics compared to the simple linear SVM model. The models (Model 2 and Model 5) using the radial (RBF) kernel under performed compared to the other models using a linear or polynomial kernel. The simple polynomial SVM (Model 3) was closest to outperforming the simple linear SVM (Model 1). The best Support Vector Machine model is Model 1.
+
+It appears that adding more features made classifying harder for the algorithms as the simple models were slightly better than their complex model counterparts in both the decision tree and SVM algorithms.
+
+The best model to use for diabetes prediction between both Assignment 2 and Assignment 3 would be the Random Forest Model (Model C) as it has the highest precision and specificity. The f1 scores are similar between the two models, meaning that they both have a similar harmonic mean between precision and sensitivity. The precision and specificity values for the Random Forest model are 4.8% and 5.6% higher than that of the and the Simple Linear SVM, respectively. This means that the Random Forest is superior in identifying relevant patients that are diabetic and is better at minimizing false positives. It should be noted that the Simple Linear SVM had a superior sensitivity value (8.6% higher than Random Forest), but the Simple Linear SVM was not as good at minimizing the false positives. 
+
+
+
+
+#### Assignment 2: Model Summaries
+
+
+```{r}
+accuracy <- c(cmA$overall[1], cmB$overall[1], cmC$overall[1])
+kappa.val <- c(cmA$overall["Kappa"], cmB$overall["Kappa"], cmC$overall["Kappa"])
+precision.val <- c(cmA$byClass['Pos Pred Value'], cmB$byClass['Pos Pred Value'], cmC$byClass['Pos Pred Value'] )
+sensitivity.val <- c(cmA$byClass['Sensitivity'], cmB$byClass['Sensitivity'], cmC$byClass['Sensitivity'])
+
+specificity.val <- c(cmA$byClass['Specificity'], cmB$byClass['Specificity'], cmC$byClass['Specificity'])
+
+model.type <- c("Model A: Simple Decision Tree", "Model B: Complex Decision Tree", "Model C: Random Forest")
+results <- data.frame(model.type,
+           accuracy,
+           kappa.val,
+           precision.val,
+           sensitivity.val,
+           specificity.val)
+
+results$f1.score <- 2 * ((results$precision.val * results$sensitivity.val) / (results$precision.val + results$sensitivity.val))
+
+results <- results %>%
+  mutate_if(is.numeric,
+            round,
+            digits = 3)
+
+kableExtra::kbl(results) %>%
+  kableExtra::kable_classic()
+```
+
+
+#### Assignment 3: Model Summaries
+
+```{r}
+accuracy <- c(cm1$overall[1], cm2$overall[1], cm3$overall[1], cm4$overall[1], cm5$overall[1], cm6$overall[1])
+kappa.val <- c(cm1$overall["Kappa"], cm2$overall["Kappa"], cm3$overall["Kappa"], cm4$overall["Kappa"], cm5$overall["Kappa"], cm6$overall["Kappa"])
+precision.val <- c(cm1$byClass['Pos Pred Value'], cm2$byClass['Pos Pred Value'], cm3$byClass['Pos Pred Value'], cm4$byClass['Pos Pred Value'], cm5$byClass['Pos Pred Value'], cm6$byClass['Pos Pred Value'])
+sensitivity.val <- c(cm1$byClass['Sensitivity'], cm2$byClass['Sensitivity'], cm3$byClass['Sensitivity'], cm4$byClass['Sensitivity'], cm5$byClass['Sensitivity'], cm6$byClass['Sensitivity'])
+
+specificity.val <- c(cm1$byClass['Specificity'], cm2$byClass['Specificity'], cm3$byClass['Specificity'], cm4$byClass['Specificity'], cm5$byClass['Specificity'], cm6$byClass['Specificity'])
+
+model.type <- c("Model 1: Simple Linear SVM", "Model 2: Simple Radial SVM", "Model 3: Simple Polynomial SVM", "Model 4: Complex Linear SVM", "Model 5: Complex Radial SVM", "Model 6: Complex Polynomial SVM")
+results <- data.frame(model.type,
+           accuracy,
+           kappa.val,
+           precision.val,
+           sensitivity.val,
+           specificity.val)
+
+results$f1.score <- 2 * ((results$precision.val * results$sensitivity.val) / (results$precision.val + results$sensitivity.val))
+
+results <- results %>%
+  mutate_if(is.numeric,
+            round,
+            digits = 3)
+
+kableExtra::kbl(results) %>%
+  kableExtra::kable_classic()
+```
+
+
+
+
+
+# Literature Review
+
+Machine learning algorithms are being applied to a plethora of different applications within the medical field, most notably image recognition and diagnosis prediction. The focus of the literature will be on the latter. Many of the academic articles that compared the predictive power of decision trees, random forests, and support vector machines in healthcare found that one algorithm can prove to be more effective given the same dataset and data preparation.
+
+In the article, "A comparative analysis of machine learning classifiers for stroke prediction: A predictive analytics approach" (https://www.sciencedirect.com/science/article/pii/S2772442522000569), a machine learning approach is applied to diagnose stroke. Many algorithms were applied including SVM, random forest, and decision tree. Random Over Sampling (ROS) was used to balance the data and used 10 fold cross validation to gain a more accurate estimate. This study found that: SVM performed the best with a 99.99% accuracy, random forest performed second best with a 99.87% accuracy, and decision tree performed the worst with a 96.9% accuracy.
+
+
+The article, "Comparative Analysis of Classification Models for
+Healthcare Data Analysis" (https://www.ijcit.com/archives/volume7/issue4/IJCIT070404.pdf), developed classification models to predict heart disease. Many algorithms were tested to find the optimal classifier for the data. SVM (84% accurate) outperformed all other classifiers including random forest (83% accurate) and decision tree (77.7% accurate). This study also tried other ensemble-learning methods (bagging and boosting) to try improve accuracy. The decision tree accuracy increased when paired with the ensemble learning, but it did not out perform SVM.
+
+
+The article, "A Comparative Analysis on the Evaluation of Classification Algorithms in the Prediction of Diabetes" (https://www.researchgate.net/publication/328020082_A_Comparative_Analysis_on_the_Evaluation_of_Classification_Algorithms_in_the_Prediction_of_Diabetes), aimed to predict Diabetes Mellitus using a multitude of machine learning algorithms using data from the **National Institute of Diabetes and Digestive and Kidney Diseases**. The study determined that logistic regression and gradient boost were the best an accuracy of 79%. Random forest (76% accuracy) was the best between SVM, random forest, and decision tree. SVM with a linear kernel did not perform well in this study, only achieving a 68% accuracy. This study does not appear to balance the imbalanced target class which most likely had a negative impact on some algorithms ability to learn the true patterns in the data. 
+
+
+
+# Conclusion
+
+Tree Based algorithms and Support Vector Machines are used in a wide array of applications. Depending on the task and data limitations one type of algorithms may greatly outperform the other, as shown in the literature review. In the case of Assignment 3, the Random Forest model slightly outperformed the Simple Linear SVM model.
