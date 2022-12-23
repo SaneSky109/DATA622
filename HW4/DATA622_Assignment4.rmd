@@ -1,0 +1,681 @@
+---
+title: 'DATA622: Homework 4'
+author: "Eric Lehmphul"
+date: "12/12/2022"
+output: 
+  rmdformats::readthedown:
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r, warning=F, message=F}
+library(tidyverse)
+library(tensorflow)
+library(openssl)
+library(reticulate)
+library(keras)
+library(nnet)
+library(plotly)
+library(rpart.plot)
+library(caret)
+```
+
+
+# Objective
+
+The goal of this homework assignment is to classify images using two different machine learning algorithms learned throughout the semester, specifically one methodology studied in weeks 1-10, and one methodology from weeks 11-15. I chose to model the data using XG boost, learned in week 7, and convolutional neural network, learned in week 14. Each algorithms was analyzed in terms of computational speed and accuracy to determine which algorithm is better for classifying images of American Sign Language letters.
+
+
+# Data Source
+
+The data source used for this assignment is the 'Sign Language MNIST' dataset on Kaggle.com (https://www.kaggle.com/datasets/datamunge/sign-language-mnist?select=sign_mnist_train). The images within this dataset represent 24 of the 26 American Sign Language letters. Both the letters 'J' and 'Z' were excluded from this analysis as they include motion to sign the letter which is not possible to show in a still image. This data source contains separate .csv files for training and testing the model. The columns of the files relate to the grayscale pixel value of a 28 x 28 pixel image as well as a column for the label.
+
+
+
+## Read in Data
+
+The training and testing datasets were stored in memory. I releveled the labels of the target variable as the numerical location of the letter was being used to represent the label instead of using the letter.
+
+```{r}
+train <- read.csv("sign_mnist_train.csv")
+test <- read.csv("sign_mnist_test.csv")
+```
+
+
+```{r}
+train$label <- as.factor(train$label)
+
+levels(train$label) <- list(A="0", B="1", C="2",
+                           D="3", E="4", F="5",
+                            G="6", H="7", I="8",
+                            K="10", L="11", M="12",
+                            N="13", O="14", P="15",
+                            Q="16", R="17", S="18",
+                            T="19", U="20", V="21",
+                            W="22", X="23", Y="24")
+
+test$label <- as.factor(test$label)
+
+levels(test$label) <- list(A="0", B="1", C="2",
+                           D="3", E="4", F="5",
+                            G="6", H="7", I="8",
+                            K="10", L="11", M="12",
+                            N="13", O="14", P="15",
+                            Q="16", R="17", S="18",
+                            T="19", U="20", V="21",
+                            W="22", X="23", Y="24")
+```
+
+## Glimpse at Data
+
+Looking at the summary statistics of the first and last 10 columns of data:
+
+* The pixel data stored in the columns ranges from 0 to 255
+* There are 784 different columns related to pixel location, meaning that the data can be rearanged into a 28 x 28 matrix
+
+
+```{r}
+summary(train[,1:10])
+summary(train[,776:785])
+```
+
+
+```{r}
+paste0("There are ", nrow(train), " rows in the training data.")
+paste0("There are ", ncol(train), " columns in the training data.")
+```
+
+
+## Normalize Data
+
+It is important to normalize pixel intensity to make sure all input parameters have a similar data distribution. The normalization will also reduce the computational load for future calculations.
+
+```{r}
+for(i in 2:ncol(train)){
+  min.max.scale <- train[,i] / 255
+  
+  train[,i] <- min.max.scale
+}
+
+for(i in 2:ncol(test)){
+  min.max.scale2 <- test[,i] / 255
+  
+  test[,i] <- min.max.scale2
+}
+```
+
+
+# Explore Data
+
+
+## Frequency of Labels
+
+Having a near equal distribution of labeled data is imperative when creating a machine learning model. A balanced dataset will give the algorithm a "fighting chance" to classify all classes successfully.
+
+### Training Data
+
+The training data appears have a fairly even distribution across most classes. R is the most common class and E is the least common class with a 1.2% difference in the volume of records.  
+
+```{r}
+letter <- c("A","B","C","D","E","F",
+            "G","H","I","K","L","M",
+            "N","O","P","Q","R","S",
+            "T","U","V","W","X","Y")
+proportions <- as.vector(prop.table(table(train$label)))
+
+fig <- plot_ly(
+  x = letter,
+  y = proportions,
+  name = "Distribution",
+  type = "bar",
+  marker = list(color = "#ED7171",
+                line = list(color = '#910E0E',
+                                  width = 1.5)))
+
+fig %>% layout(title = "Frequency of Letter in Training Data",
+               xaxis = list(categoryorder = "total descending"))
+```
+
+### Testing Data
+
+All classes in the testing set contain over 2% of the records in the testing set (approx. 143 records). This should serve as a good dataset for prediction as all classes are represented and have many examples.
+
+```{r}
+letter <- c("A","B","C","D","E","F",
+            "G","H","I","K","L","M",
+            "N","O","P","Q","R","S",
+            "T","U","V","W","X","Y")
+proportions <- as.vector(prop.table(table(test$label)))
+
+fig <- plot_ly(
+  x = letter,
+  y = proportions,
+  name = "Distribution",
+  type = "bar",
+  marker = list(color = "#545BC1",
+                line = list(color = '#050B5C',
+                                  width = 1.5)))
+
+fig %>% layout(title = "Frequency of Letter in Testing Data",
+               xaxis = list(categoryorder = "total descending"))
+```
+
+
+## Explore Images
+
+The data needs to be parsed and stored into a 28 x 28 matrix in order to visualize the image. The function that I created below visualizes the images. The function was used to showcase all of the classes in the dataset. There are similarities between a handful of the American Sign Language letters such as 'M' and 'N' both are expressed through a closed fist or 'I' and 'Y' both use an extended pinky finger. This may prove difficult for modeling.
+
+```{r}
+# function to plot images and provide the number the image is representing  
+plot.image <- function(dataset, row.index){
+
+# Obtain and store all pixels in a single row
+x <- as.numeric(dataset[row.index, 2:785])
+
+# Create an empty matrix to store image pixels
+im <- matrix(nrow = 28, ncol = 28)
+
+# Store data in matrix
+j <- 1
+for(i in 28:1){
+
+  im[,i] <- x[j:(j+27)]
+
+  j <- j+28
+
+}  
+
+# Plot the image
+image(x = 1:28, 
+      y = 1:28, 
+      z = im, 
+      col=gray((0:255)/255), 
+      main = paste0("Image: ", row.index, " Label: ", dataset$label[row.index]))
+}
+```
+
+
+```{r}
+par(mfrow = c(2, 2))
+
+plot.image(train, 47)
+plot.image(train, 30)
+plot.image(train, 3)
+plot.image(train, 1)
+```
+
+```{r}
+par(mfrow = c(2, 2))
+
+plot.image(train, 45)
+plot.image(train, 49)
+plot.image(train, 2)
+plot.image(train, 50)
+```
+
+```{r}
+par(mfrow = c(2, 2))
+
+plot.image(train, 7)
+plot.image(train, 12)
+plot.image(train, 41)
+plot.image(train, 32)
+```
+
+```{r}
+par(mfrow = c(2, 2))
+
+plot.image(train, 5)
+plot.image(train, 62)
+plot.image(train, 42)
+plot.image(train, 6)
+```
+
+
+```{r}
+par(mfrow = c(2, 2))
+
+plot.image(train, 17)
+plot.image(train, 11)
+plot.image(train, 20)
+plot.image(train, 15)
+```
+
+
+```{r}
+par(mfrow = c(2, 2))
+
+plot.image(train, 22)
+plot.image(train, 8)
+plot.image(train, 24)
+plot.image(train, 27)
+```
+
+# Machine Learning
+
+
+
+## XG Boost
+
+
+### Feature Engineering
+
+#### Create New Features
+
+I created two new features to be used in the XG boost algorithm: `rowSum` and `rowVariance`. The `rowSum` and `rowVariance` variables store the sum and variance of the grayscale pixel values, respectfully.
+
+```{r}
+train.xgb <- train
+test.xgb <- test
+
+train.xgb$rowSum <- rowSums(train.xgb[, -1])
+train.xgb$rowVariance <- rowSums((train.xgb[, -1] - rowMeans(train.xgb[, -1]))^2)/(dim(train.xgb)[2] - 1)
+
+test.xgb$rowSum <- rowSums(test[, -1])
+test.xgb$rowVariance <- rowSums((test[, -1] - rowMeans(test[, -1]))^2)/(dim(test)[2] - 1)
+```
+
+#### Dimensionality Reduction via PCA
+
+PCA was used to reduce the dimensionality of the data. The variance captured through the Principal Components seems to converge at 0.962 within the first 119 Principal Components. The XG boost model will consist of the first 119 Principal Components. PCA effectively reduced the feature size from 786 to 119.
+
+```{r, cache=TRUE}
+pca.train <- prcomp(train.xgb[,-1],
+                   center = TRUE,
+                   scale. = TRUE)
+
+pca.test <- predict(pca.train, newdata = test.xgb)
+```
+
+
+```{r}
+train1 <- as.data.frame(pca.train$x)
+test1 <- as.data.frame(pca.test)
+
+train1$label <- train$label
+test1$label <- test$label
+```
+
+
+```{r}
+# Calculate Variance
+a <- round(pca.train $sdev^2/ sum(pca.train $sdev^2),3)
+
+variance <- cumsum(a)
+
+variance[1:150]
+```
+
+
+### Model XG Boost Algorithm
+
+I elected to use the XG boost algorithm with 119 features (PC1 to PC119) to classify the images. The model hyperparameters are:
+
+* `nrounds` = 100 (Number of Trees)
+* `max_depth` = 3 (Maximum tree depth)
+* `eta` = 0.3 (Learning Rate)
+* `gamma` = 0 (Regularization Tuning)
+* `colsample_bytree` = 0.8 (Column sampling)
+* `min_child_weight` = 1 (Minimum leaf weight)
+* `subsample` = 0.5 (Row sampling)
+
+
+The model took 12.4 mins to train.
+
+```{r,cache=TRUE,warning=FALSE,message=F,results='hide'}
+set.seed(12345)
+
+start_time <- Sys.time()
+
+hyperparameters <- expand.grid(
+  nrounds = 100,
+  max_depth = 3,
+  eta = 0.3,
+  gamma = 0,
+  colsample_bytree = 0.8,
+  min_child_weight = 1,
+  subsample = 0.5
+)
+
+trctrl <- trainControl(method = "cv",
+                       number = 4) 
+
+xgboost <- train(label ~ PC1 + PC2 + PC3 + PC4 + PC5 + PC6 +PC7 + PC8 + PC9 + PC10 + PC11 + PC12 + PC13 + PC14 + PC15 + PC16 + PC17 + PC18 + PC19 + PC20 + PC21 + PC22 + PC23 + PC24 + PC25 + PC26 + PC27 + PC28 + PC29 + PC30 + PC31 + PC32 + PC33 + PC34 + PC35 + PC36 + PC37 + PC38 + PC39 + PC40 + PC41 + PC42 + PC43 + PC44 + PC45 + PC46 + PC47 + PC48 + PC49 + PC50 + PC51 + PC52 + PC53 + PC54 + PC55 + PC56 + PC57 + PC58 + PC59 + PC60 + PC61 + PC62 + PC63 + PC64 + PC65 + PC66 + PC67 + PC68 + PC69 + PC70 + PC71 + PC72 + PC73 + PC74 + PC75 + PC76 + PC77 + PC78 + PC79 + PC80 + PC81 + PC82 + PC83 + PC84 + PC85 + PC86 + PC87 + PC88 + PC89 + PC90 + PC91 + PC92 + PC93 + PC94 + PC95 + PC96 + PC97 + PC98 + PC99 + PC100 + PC101 + PC102 + PC103 + PC104 + PC105 + PC106 + PC107 + PC108 + PC109 + PC110 + PC111 + PC112 + PC113 + PC114 + PC115 + PC116 + PC117 + PC118 + PC119,
+                method = "xgbTree",
+                trControl = trctrl,
+                tuneGrid = hyperparameters,
+                data = train1)
+
+end_time <- Sys.time()
+
+```
+
+
+```{r}
+end_time - start_time
+```
+
+
+```{r}
+# set.seed(12345)
+# 
+# start_time <- Sys.time()
+# 
+# trctrl <- trainControl(method = "cv",
+#                        number = 4) 
+# 
+# forest <- train(label ~ PC1 + PC2 + PC3 + PC4 + PC5 + PC6 +PC7 + PC8 + PC9 + PC10 + PC11 + PC12 + PC13 + PC14 + PC15 + PC16 + PC17 + PC18 + PC19 + PC20 + PC21 + PC22 + PC23 + PC24 + PC25 + PC26 + PC27 + PC28 + PC29 + PC30,
+#                 method = "xgbTree",
+#                 trControl = trctrl,
+#                 data = train1)
+# 
+# end_time <- Sys.time()
+# end_time - start_time
+```
+
+### Model Evaluation
+
+The model performed well with an overall accuracy of 74.48%. This model is much more effective than guessing by random chance, as the random chance percentage is 1/24 or 4.167%. This model has the capacity to classify all classes with some level of accuracy, though some classes achieved better results than others. For example, C recieved a near perfect prediction rate on the testing data where as N was less sucessful in terms of prediction.
+
+```{r}
+pred <- predict(xgboost, newdata = test1)
+
+cm1 <- confusionMatrix(data = pred, reference = test1$label)
+
+cm1
+```
+
+
+
+
+
+## CNN
+
+
+### Set up Tensorflow and Keras Framework in R
+
+The CNN function that I will use comes from the Keras package that is native to Python. To access the functions needed to run the CNN in R, a python virtual environment needs to be estabished and the tensorflow and keras packages need to be installed in both R and the newly created virtual environment. 
+
+```{r}
+# path_to_python <- install_python()
+# virtualenv_create("r-reticulate", python = path_to_python)
+```
+
+```{r}
+#virtualenv_install(envname = "r-reticulate", "html5lib")
+```
+
+```{r}
+#install_tensorflow(envname = "r-reticulate", pip_options = "--no-cache-dir")
+```
+
+
+```{r}
+#install_keras(envname = "r-reticulate", pip_options = "--no-cache-dir")
+
+
+```
+
+
+
+### Prepare Data
+
+To prepare the data for the CNN, I separated the data into two separate lists. In the first list, the training labels were converted to the python categorical data type. In the second list, pixel data was reshaped into a 28 x 28 matrix for each record. Testing data recieved the same procedure. 
+
+```{r}
+use_virtualenv("r-reticulate")
+train.cnn <- train[,-1]
+train.labels <- train[,1]
+
+num.classes <- 25
+train.labels <- to_categorical(as.integer(train.labels), num.classes)
+
+test.cnn <- test[,-1]
+test.labels <- test[,1]
+```
+
+```{r}
+start_time <- Sys.time()
+
+
+train.cnn2 <- list()
+
+# Create an empty matrix to store image pixels
+
+im <- matrix(nrow = 28, ncol = 28)
+# Store data in matrix
+
+
+for(k in 1:nrow(train.cnn)){
+  x <- as.numeric(train.cnn[k, 1:784])
+  j <- 1
+  for(i in 28:1){
+  
+  
+  
+  im[,i] <- x[j:(j+27)]
+  
+  j <- j+28
+  
+  }  
+  train.cnn2[[k]] <- im
+}
+
+end_time <- Sys.time()
+end_time - start_time
+
+```
+
+
+```{r}
+start_time <- Sys.time()
+
+
+test.cnn2 <- list()
+
+# Create an empty matrix to store image pixels
+
+im <- matrix(nrow = 28, ncol = 28)
+# Store data in matrix
+
+
+for(k in 1:nrow(test.cnn)){
+  x <- as.numeric(test.cnn[k, 1:784])
+  j <- 1
+  for(i in 28:1){
+  
+  
+  
+  im[,i] <- x[j:(j+27)]
+  
+  j <- j+28
+  
+  }  
+  test.cnn2[[k]] <- im
+}
+
+end_time <- Sys.time()
+end_time - start_time
+
+```
+
+### Reshape Data
+
+The CNN requires the structure of the data to be 4 dimensional (row x height, width, color channel). As the image is grayscale, that means there is only 1 color channel. The new data shapes are:
+
+* Training - 27455 x 28 x 28 x 1
+* Testing - 7172 x 28 x 28 x 1
+
+```{r}
+use_virtualenv("r-reticulate")
+train.cnn3 <- array_reshape(train.cnn2, 
+                               dim = c(nrow(train.cnn), 28, 28, 1)
+                               )
+
+test.cnn3 <- array_reshape(test.cnn2, 
+                               dim = c(nrow(test.cnn), 28, 28, 1)
+                               )
+```
+
+### Create CNN Structure
+
+The CNN framework I used for modeling consists of the following structure:
+
+* Convolutional Layer
+  - 32 filters
+  - kernel size of 4 x 4
+  - padding = same
+  - activation function of relu
+* Max Pooling Layer
+  - pool size of 3 x 3
+* Dropout Later
+  - Rate of 0.1
+* Convolutional Layer
+  - 32 filters
+  - kernel size of 4 x 4
+  - padding = same
+  - activation function of relu
+* Max Pooling Layer
+  - pool size of 3 x 3
+* Dropout Later
+  - Rate of 0.1
+* Convolutional Layer
+  - 32 filters
+  - kernel size of 4 x 4
+  - padding = same
+  - activation function of relu
+* Max Pooling Layer
+  - pool size of 3 x 3
+* Flatten Layer
+* Dense Layer
+  - 16 neurons
+  - activation function of relu
+* Dense Layer (Output Layer)
+  - 25 neurons
+  - softmax activation
+
+```{r}
+tensorflow::tf$random$set_seed(12345)
+
+model <- keras_model_sequential(name = "CNN_Model") %>% 
+  
+  layer_conv_2d(filters = 32, 
+                kernel_size = c(4,4), 
+                padding = "same", activation = "relu",
+                input_shape = c(28, 28, 1)
+                ) %>% 
+  
+  layer_max_pooling_2d(pool_size = c(3,3)) %>% 
+  
+  layer_dropout(rate = 0.1) %>%
+  
+  layer_conv_2d(filters = 32, 
+                kernel_size = c(4,4), 
+                padding = "same", activation = "relu",
+                input_shape = c(28, 28, 1)
+                ) %>% 
+  
+  layer_max_pooling_2d(pool_size = c(3,3)) %>% 
+  
+  layer_dropout(rate = 0.1) %>%
+  
+  layer_conv_2d(filters = 32, 
+                kernel_size = c(4,4), 
+                padding = "same", activation = "relu",
+                input_shape = c(28, 28, 1)
+                ) %>% 
+  
+  layer_max_pooling_2d(pool_size = c(3,3)) %>% 
+  
+  
+  layer_flatten() %>% 
+  
+  layer_dense(units = 16, 
+              activation = "relu") %>% 
+ 
+  layer_dense(units = 25, 
+              activation = "softmax",
+              name = "Output"
+              )
+
+model
+```
+
+### Train Model
+
+The model was trained to optimize accuracy and minimize categorical crossentropy. The following hyperparameters were used to train the model:
+
+* epochs = 10
+* batch_size = 32
+* vaidation_splot = 0.1
+
+The model only required 3.17 mins to train.
+
+```{r}
+start_time <- Sys.time()
+
+model %>% 
+  compile(loss = "categorical_crossentropy",
+          optimizer = optimizer_adam(learning_rate = 0.001), 
+          metrics = "accuracy"
+          )
+
+
+train_history <- model %>% 
+  fit(x = train.cnn3, 
+      y = train.labels,
+      epochs = 10, 
+      batch_size = 32,
+      validation_split = 0.1, 
+      
+      verbose = 2
+      )
+
+
+end_time <- Sys.time()
+end_time - start_time
+```
+
+
+```{r}
+plot(train_history)
+```
+
+
+### CNN Testing Data Predictions
+
+The CNN model produced a testing set accuracy of 85.63%. This accuracy is deceiving as the model correctly classified almost all classes perfectly apart from 3 letters: M, N, and O. The algorithm classified 0 values as M, N labels as O, and O labels as M and N.
+
+```{r}
+pred.cnn <- model %>% predict(test.cnn3) %>% k_argmax()
+
+pred.factor <- as.factor(as.numeric(pred.cnn))
+
+levels(pred.factor) <- list(A="1", B="2", C="3",
+                           D="4", E="5", F="6",
+                            G="7", H="8", I="9",
+                            K="10", L="11", M="12",
+                            N="12", O="13", P="15",
+                            Q="16", R="17", S="18",
+                            T="19", U="20", V="21",
+                            W="22", X="23", Y="24")
+
+cm2 <- confusionMatrix(data = pred.factor, reference = test$label)
+
+cm2
+```
+
+
+## Which Performed Better? (XG Boost vs CNN)
+
+Each algorithm produced a respectable accuracy metric being well above the baseline of random chance. CNN was able to attain a much higher accuracy for most classes, but failed to classify the letters M, N, and O properly. The XG Boost algorithm showcased the ability to successfully identify all classes with a degree of accuracy. I would consider the XG Boost algorithm to be superior to the CNN algorithm as the CNN algorithm cannot identify all classes. 
+
+# Conclusion
+
+Using techniques learned throughout the semester, I achieved two models that could classify images of American Sign Language letters. It was found that the XG Boost algorithm was more reliable than its CNN counterpart after analyzing the model results. The inclusion of synthesized/distorted images could have improved model performance further and may have fixed the issues with the CNN model.
+
+A classification model of sign language letters could be applied to a real time application that would convert sign language letters to text. This type of application would provide an alternative way to communicate with someone who is deaf or hard of hearing.
